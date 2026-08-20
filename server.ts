@@ -2,7 +2,6 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import crypto from 'crypto';
 import QRCode from 'qrcode';
-import { createServer as createViteServer } from 'vite';
 import { Redis } from '@upstash/redis';
 import { AppConfig, ReceiptRequest, RequestStatus } from './src/types.js';
 
@@ -559,6 +558,13 @@ app.get('/api/test/verification', async (_req: Request, res: Response) => {
 // Start Server with Vite Middleware (local development only)
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    // Dynamic import: Vite (and its Rollup dependency, which needs a
+    // platform-specific native binary) must NEVER be loaded when this file
+    // is imported by the Vercel serverless function - only when actually
+    // running the local dev server. A static top-level import would pull it
+    // into the function bundle and crash it in production with
+    // "Cannot find module @rollup/rollup-linux-x64-gnu".
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
