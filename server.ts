@@ -65,8 +65,13 @@ let redisClient: Redis | null | undefined; // undefined = not yet attempted
 
 function getRedis(): Redis | null {
   if (redisClient !== undefined) return redisClient;
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  // Vercel's "Upstash for Vercel" marketplace integration injects
+  // KV_REST_API_URL / KV_REST_API_TOKEN (a legacy naming kept for backward
+  // compatibility with the old first-party Vercel KV product), not
+  // UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN as Upstash's own docs
+  // show for a standalone Upstash account. We accept either.
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (url && token) {
     redisClient = new Redis({ url, token });
   } else {
@@ -155,7 +160,7 @@ function verifySessionToken(token: string | undefined | null): boolean {
 async function loadRequests(): Promise<ReceiptRequest[]> {
   const redis = getRedis();
   if (!redis) {
-    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN non impostate'));
+    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN (o KV_REST_API_URL/TOKEN) non impostate'));
     return memoryRequests;
   }
   try {
@@ -172,7 +177,7 @@ async function saveRequests(reqs: ReceiptRequest[]): Promise<void> {
   memoryRequests = reqs;
   const redis = getRedis();
   if (!redis) {
-    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN non impostate'));
+    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN (o KV_REST_API_URL/TOKEN) non impostate'));
     return;
   }
   try {
@@ -186,7 +191,7 @@ async function saveRequests(reqs: ReceiptRequest[]): Promise<void> {
 async function loadConfig(): Promise<AppConfig> {
   const redis = getRedis();
   if (!redis) {
-    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN non impostate'));
+    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN (o KV_REST_API_URL/TOKEN) non impostate'));
     return memoryConfig;
   }
   try {
@@ -206,7 +211,7 @@ async function saveConfig(config: AppConfig): Promise<void> {
   memoryConfig = config;
   const redis = getRedis();
   if (!redis) {
-    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN non impostate'));
+    recordStorageError(new Error('UPSTASH_REDIS_REST_URL/TOKEN (o KV_REST_API_URL/TOKEN) non impostate'));
     return;
   }
   try {
@@ -476,7 +481,7 @@ app.get('/api/diag/storage', async (_req: Request, res: Response) => {
 
   const redis = getRedis();
   if (!redis) {
-    errorMessage = 'UPSTASH_REDIS_REST_URL e/o UPSTASH_REDIS_REST_TOKEN non impostate.';
+    errorMessage = 'Nessuna variabile Redis trovata (UPSTASH_REDIS_REST_URL/TOKEN o KV_REST_API_URL/TOKEN).';
     recordStorageError(new Error(errorMessage));
   } else {
     try {
@@ -495,7 +500,7 @@ app.get('/api/diag/storage', async (_req: Request, res: Response) => {
   return res.json({
     ok: writeOk && readOk,
     mode: storageStatus.mode,
-    hasCredentials: Boolean(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN),
+    hasCredentials: Boolean((process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL) && (process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN)),
     writeOk,
     readOk,
     roundtripValue,

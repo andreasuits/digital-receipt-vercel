@@ -385,8 +385,8 @@ export const CashierView: React.FC<CashierViewProps> = () => {
               Le email inviate dal telefono potrebbero non arrivare qui. Vai su{' '}
               <code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">/api/diag/storage</code>{' '}
               per la diagnosi, e verifica di aver installato l'integrazione <code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">Upstash</code> da Vercel Marketplace (variabili{' '}
-              <code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">UPSTASH_REDIS_REST_URL</code> /{' '}
-              <code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">UPSTASH_REDIS_REST_TOKEN</code>).
+              <code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">UPSTASH_REDIS_REST_URL</code>/<code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">TOKEN</code>{' '}
+              oppure <code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">KV_REST_API_URL</code>/<code className="bg-red-100 px-1 py-0.5 rounded font-mono text-xs">TOKEN</code>).
               {storageHealth.error ? ` (${storageHealth.error})` : ''}
             </p>
           </div>
