@@ -1,0 +1,6 @@
+{
+  "name": "Digital Receipt",
+  "description": "QR Code to Barcode system for digital receipts on mobile and cashier iPad",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
