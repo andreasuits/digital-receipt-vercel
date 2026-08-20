@@ -198,6 +198,15 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ onSessionCreated }) 
                 </div>
               </div>
 
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-[11px] leading-relaxed text-gray-500">
+                <p>
+                  <span className="font-semibold text-gray-700">IT:</span> La tua email viene usata esclusivamente per generare questo scontrino digitale e viene cancellata automaticamente dopo un breve periodo. Non verrà utilizzata per marketing o altri scopi, né condivisa con terzi.
+                </p>
+                <p className="mt-1.5">
+                  <span className="font-semibold text-gray-700">EN:</span> Your email is used solely to generate this digital receipt and is automatically deleted after a short period. It will not be used for marketing or any other purpose, nor shared with third parties.
+                </p>
+              </div>
+
               <button
                 type="submit"
                 disabled={isSubmitting || !emailInput.trim()}

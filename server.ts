@@ -222,13 +222,24 @@ async function saveConfig(config: AppConfig): Promise<void> {
   }
 }
 
-// Removes expired/completed requests and persists the cleaned list.
-function purgeRequests(reqs: ReceiptRequest[]): ReceiptRequest[] {
+// Removes requests that should no longer be stored:
+// - PENDING/DISPLAYED requests past their expiry are dropped immediately.
+// - COMPLETED/EXPIRED requests are kept only for `retentionMinutes` (the
+//   configured data-retention window), then dropped - this is what actually
+//   enforces automatic deletion, instead of only removing them opportunistically
+//   whenever a new customer happened to submit a request afterwards.
+function purgeRequests(reqs: ReceiptRequest[], retentionMinutes: number): ReceiptRequest[] {
   const now = Date.now();
+  const retentionMs = Math.max(0, retentionMinutes) * 60 * 1000;
   return reqs.filter(r => {
-    if (r.status === 'EXPIRED' || r.status === 'COMPLETED') return false;
-    if (r.expiresAt && new Date(r.expiresAt).getTime() <= now) return false;
-    return true;
+    if (r.status === 'PENDING' || r.status === 'DISPLAYED') {
+      if (r.expiresAt && new Date(r.expiresAt).getTime() <= now) return false;
+      return true;
+    }
+    // COMPLETED or EXPIRED: bounded retention window only.
+    const referenceTime = r.completedAt || r.displayedAt || r.createdAt;
+    const refMs = new Date(referenceTime).getTime();
+    return now - refMs < retentionMs;
   });
 }
 
@@ -288,7 +299,7 @@ const handleCreateSession = async (req: Request, res: Response) => {
   existing.forEach(r => map.set(r.id, r));
   map.set(newRequest.id, newRequest);
 
-  const updated = purgeRequests(Array.from(map.values())).sort(
+  const updated = purgeRequests(Array.from(map.values()), config.dataRetentionMinutes).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 
@@ -317,16 +328,88 @@ app.get('/api/customer/session/:id', async (req: Request, res: Response) => {
   return res.json({ request });
 });
 
+// ---------------------------------------------------------------------------
+// PIN BRUTE-FORCE PROTECTION
+//
+// A 4-digit PIN has only 10,000 possible values - trivial to brute-force in
+// minutes without a limit on attempts. This tracks failed attempts per
+// client IP in Redis (shared across all function instances, unlike an
+// in-memory counter which wouldn't be) and temporarily locks out an IP after
+// too many failures.
+// ---------------------------------------------------------------------------
+
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_SECONDS = 15 * 60; // 15 minutes
+
+function getClientIp(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.length > 0) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+async function isLockedOut(ip: string): Promise<{ locked: boolean; retryAfterSeconds?: number }> {
+  const redis = getRedis();
+  if (!redis) return { locked: false }; // fail open only when storage itself is down
+  try {
+    const count = await redis.get<number>(`auth_fail:${ip}`);
+    if (count && count >= MAX_FAILED_ATTEMPTS) {
+      const ttl = await redis.ttl(`auth_fail:${ip}`);
+      return { locked: true, retryAfterSeconds: ttl > 0 ? ttl : LOCKOUT_SECONDS };
+    }
+    return { locked: false };
+  } catch {
+    return { locked: false };
+  }
+}
+
+async function recordFailedAttempt(ip: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const key = `auth_fail:${ip}`;
+    const newCount = await redis.incr(key);
+    if (newCount === 1) {
+      await redis.expire(key, LOCKOUT_SECONDS);
+    }
+  } catch {
+    // best-effort; don't block login flow on rate-limit bookkeeping errors
+  }
+}
+
+async function clearFailedAttempts(ip: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.del(`auth_fail:${ip}`);
+  } catch {
+    // ignore
+  }
+}
+
 // 3. Cashier Auth: verifies the PIN against the stored config and issues a
 //    signed, time-limited session token required by every /api/cashier/* call.
 app.post('/api/cashier/auth', async (req: Request, res: Response) => {
+  const ip = getClientIp(req);
+
+  const lockout = await isLockedOut(ip);
+  if (lockout.locked) {
+    return res.status(429).json({
+      success: false,
+      error: `Troppi tentativi falliti. Riprova tra ${Math.ceil((lockout.retryAfterSeconds || LOCKOUT_SECONDS) / 60)} minuti.`,
+    });
+  }
+
   const { pin } = req.body;
   const config = await loadConfig();
 
   if (typeof pin !== 'string' || pin !== config.cashierPin) {
+    await recordFailedAttempt(ip);
     return res.status(401).json({ success: false, error: 'PIN errato.' });
   }
 
+  await clearFailedAttempts(ip);
   const token = createSessionToken();
   return res.json({ success: true, token, expiresInMs: SESSION_DURATION_MS });
 });
@@ -339,12 +422,22 @@ app.get('/api/cashier/queue', async (req: Request, res: Response) => {
   }
 
   const now = new Date();
-  const requests = purgeRequests(await loadRequests());
+  const config = await loadConfig();
+  const rawRequests = await loadRequests();
+  const requests = purgeRequests(rawRequests, config.dataRetentionMinutes);
+
+  // Actually persist the deletion (write-back), instead of only computing a
+  // filtered view - this is what makes retention real instead of cosmetic.
+  // Only write when something actually changed, to avoid an extra Redis
+  // write on every single 1s poll.
+  if (requests.length !== rawRequests.length) {
+    await saveRequests(requests);
+  }
+
   const activeRequests = requests.filter(
     r => (r.status === 'PENDING' || r.status === 'DISPLAYED') && new Date(r.expiresAt) > now
   );
   const recentHistory = requests.filter(r => r.status === 'COMPLETED' || r.status === 'EXPIRED').slice(0, 10);
-  const config = await loadConfig();
 
   return res.json({
     activeRequests,
@@ -471,6 +564,36 @@ app.get('/api/qr', async (req: Request, res: Response) => {
 // 7b. Storage diagnostics: writes and reads back a test value to verify the
 //     shared cross-device store is actually working. Visit this URL right
 //     after deploying to confirm sync will work between phone and iPad.
+// Scheduled data-retention purge (see vercel.json "crons"). Runs even if no
+// one is actively viewing the cashier screen - e.g. overnight, store closed -
+// so retained customer emails are still deleted on schedule, not only as a
+// side effect of someone polling the queue.
+app.get('/api/cron/purge', async (req: Request, res: Response) => {
+  // Vercel signs cron requests with this header automatically when
+  // CRON_SECRET is set as an environment variable; if you set it, this
+  // rejects any other caller. If not set, the endpoint is only destructive
+  // in the sense of deleting already-expired/over-retention data, so it's
+  // safe to leave open, but setting CRON_SECRET is recommended.
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const authHeader = req.headers['authorization'];
+    if (authHeader !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  }
+
+  const config = await loadConfig();
+  const rawRequests = await loadRequests();
+  const requests = purgeRequests(rawRequests, config.dataRetentionMinutes);
+  const removed = rawRequests.length - requests.length;
+
+  if (removed > 0) {
+    await saveRequests(requests);
+  }
+
+  return res.json({ success: true, removed, remaining: requests.length });
+});
+
 app.get('/api/diag/storage', async (_req: Request, res: Response) => {
   const testKey = 'diagnostic_check';
   const testValue = { pingedAt: new Date().toISOString() };

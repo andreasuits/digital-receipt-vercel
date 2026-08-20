@@ -94,7 +94,7 @@ export const CashierView: React.FC<CashierViewProps> = () => {
         setIsAuthenticated(true);
         setPinInput('');
       } else {
-        setPinError('Incorrect PIN. Default PIN is 1234.');
+        setPinError(data.error || 'Incorrect PIN. Default PIN is 1234.');
       }
     } catch (err) {
       setPinError('Authentication error');
